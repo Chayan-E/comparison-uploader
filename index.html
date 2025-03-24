@@ -50,7 +50,140 @@
 </div>
 
 <script>
-// (JS code unchanged, skipped for brevity)
+let processedGroups = {};
+let summary = { total: 0, good: 0, low: 0, moderate: 0 };
+
+function processFile() {
+  const file = document.getElementById('fileInput').files[0];
+  if (!file) {
+    alert("Please upload a valid Excel/CSV file!");
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    const data = new Uint8Array(e.target.result);
+    const workbook = XLSX.read(data, { type: 'array' });
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
+    processedGroups = {};
+    summary = { total: 0, good: 0, low: 0, moderate: 0 };
+
+    jsonData.forEach((item, index) => {
+      let cost = parseFloat(item["Cost Price (Without GST)"]);
+      let mrp = parseFloat(item["MRP (Incl. GST)"]);
+      let gst = parseFloat(item["GST %"]);
+      if (!isNaN(cost) && !isNaN(mrp) && !isNaN(gst) && cost > 0 && mrp > 0) {
+        let abatedMRP = mrp / (1 + gst / 100);
+        let marginValue = abatedMRP - cost;
+        let marginPercent = (marginValue / abatedMRP) * 100;
+        let groupName = item["Group Name"] || "Ungrouped";
+
+        if (!processedGroups[groupName]) processedGroups[groupName] = [];
+
+        processedGroups[groupName].push({
+          groupName: groupName,
+          productName: item["Product Name"] || "Product " + (index+1),
+          cost: cost.toFixed(2),
+          mrp: mrp.toFixed(2),
+          gst: gst.toFixed(2),
+          abatedMRP: abatedMRP.toFixed(2),
+          marginValue: marginValue.toFixed(2),
+          marginPercent: marginPercent.toFixed(2)
+        });
+
+        summary.total++;
+        if (marginPercent >= 20) summary.good++;
+        else if (marginPercent <= 10) summary.low++;
+        else summary.moderate++;
+      }
+    });
+
+    for (let group in processedGroups) {
+      processedGroups[group].sort((a, b) => b.marginPercent - a.marginPercent);
+      processedGroups[group].forEach((d, index) => {
+        d.rank = "L" + (index + 1);
+      });
+    }
+
+    renderDashboard();
+    renderTable();
+    renderChart();
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function renderDashboard() {
+  document.getElementById('dashboard').innerHTML = `
+    <div class="col-md-3"><div class="card"><div class="card-body"><h5>Total Products</h5><h4>${summary.total}</h4></div></div></div>
+    <div class="col-md-3"><div class="card bg-success text-white"><div class="card-body"><h5>Good Margin (≥20%)</h5><h4>${summary.good}</h4></div></div></div>
+    <div class="col-md-3"><div class="card bg-warning text-white"><div class="card-body"><h5>Moderate Margin</h5><h4>${summary.moderate}</h4></div></div></div>
+    <div class="col-md-3"><div class="card bg-danger text-white"><div class="card-body"><h5>Low Margin (≤10%)</h4><h4>${summary.low}</h4></div></div></div>
+  `;
+}
+
+function renderTable() {
+  let html = `<table class="table table-bordered"><thead class="table-light"><tr><th>Group Name</th><th>Product Name</th><th>Cost Price</th><th>MRP</th><th>GST %</th><th>Abated MRP</th><th>Margin Value</th><th>Margin %</th><th>Rank</th></tr></thead><tbody>`;
+  for (let group in processedGroups) {
+    processedGroups[group].forEach(d => {
+      html += `<tr>
+        <td>${d.groupName}</td><td>${d.productName}</td>
+        <td>${d.cost}</td><td>${d.mrp}</td><td>${d.gst}%</td><td>${d.abatedMRP}</td><td>${d.marginValue}</td><td>${d.marginPercent}%</td><td><strong>${d.rank}</strong></td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table>`;
+  document.getElementById('resultTable').innerHTML = html;
+}
+
+function exportExcel() {
+  let data = [["Group Name", "Product Name", "Cost Price", "MRP", "GST %", "Abated MRP", "Margin Value", "Margin %", "Rank"]];
+  for (let group in processedGroups) {
+    processedGroups[group].forEach(d => {
+      data.push([d.groupName, d.productName, d.cost, d.mrp, d.gst + "%", d.abatedMRP, d.marginValue, d.marginPercent + "%", d.rank]);
+    });
+  }
+  let ws = XLSX.utils.aoa_to_sheet(data);
+  let wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "All Products");
+  XLSX.writeFile(wb, "Margin_Comparison_Groupwise.xlsx");
+}
+
+function downloadPDF() {
+  if (summary.total === 0) return alert("Please process data first!");
+  html2canvas(document.getElementById('resultTable')).then(canvas => {
+    const imgData = canvas.toDataURL('image/png');
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    let width = pdf.internal.pageSize.getWidth();
+    let height = (canvas.height * width) / canvas.width;
+    pdf.addImage(imgData, 'PNG', 0, 0, width, height);
+    pdf.save('Margin_Comparison_Groupwise.pdf');
+  });
+}
+
+function renderChart() {
+  const ctx = document.getElementById('marginChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Good Margin (≥20%)', 'Moderate Margin', 'Low Margin (≤10%)'],
+      datasets: [{
+        data: [summary.good, summary.moderate, summary.low],
+        backgroundColor: ['#28a745', '#ffc107', '#dc3545']
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { position: 'bottom' } }
+    }
+  });
+}
+
+var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+  return new bootstrap.Tooltip(tooltipTriggerEl);
+});
 </script>
 
 </body>
